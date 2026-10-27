@@ -260,6 +260,89 @@ class AssistantHistoryFingerprintTests(unittest.TestCase):
         self.assertEqual(by_role["user"], self.IDENTITY)
 
 
+class DshAtPathParagraphTests(unittest.TestCase):
+    """DSH 0.3.x 系统提示里的 @ 路径说明段（#677 / #678）。
+
+    上游对这一段连续原文做特征匹配：单发首句 200，前两句连排就 400。整段换成
+    同义表述即放行，@ 路径的语义（相对路径基准、目录斜杠、按文件读）必须保留。
+    """
+
+    PARA = (
+        "Tokens prefixed with @ are paths the user explicitly referenced. "
+        "Relative paths resolve from the workspace root; absolute paths identify "
+        "files or directories on the host. A trailing slash marks a directory: "
+        "list it when its contents matter. Anything else is a file: use the read "
+        "tool when its contents are needed, and do not claim to have inspected it "
+        "before reading. @\"...\" quotes a path containing spaces."
+    )
+    PARA_OLD = (
+        "Tokens prefixed with @ are paths the user explicitly referenced. "
+        "Relative paths resolve from the workspace root; absolute paths point to "
+        "files or directories on the host. A trailing slash marks a directory, so "
+        "list it when its contents matter. Anything else is a file: open it with "
+        "the read tool when its contents are needed, and never claim to have "
+        "inspected it before reading. The @\"...\" form only quotes a path that "
+        "contains spaces."
+    )
+    CLEAN = P.SANITIZE_DSH_PATHS_REPLACEMENT
+
+    def test_current_wording_rewritten(self):
+        out = P.sanitize_text(self.PARA)
+        self.assertEqual(out, self.CLEAN)
+        self.assertFalse(P.has_fingerprint(out))
+
+    def test_older_wording_rewritten(self):
+        self.assertEqual(P.sanitize_text(self.PARA_OLD), self.CLEAN)
+
+    def test_case_insensitive(self):
+        self.assertEqual(P.sanitize_text(self.PARA.upper()), self.CLEAN)
+        self.assertEqual(P.sanitize_text(self.PARA.lower()), self.CLEAN)
+
+    def test_embedded_paragraph_rewritten(self):
+        text = "before\n\n" + self.PARA + "\n\nafter"
+        out = P.sanitize_text(text)
+        self.assertEqual(out, "before\n\n" + self.CLEAN + "\n\nafter")
+
+    def test_idempotent(self):
+        once = P.sanitize_text(self.PARA)
+        self.assertEqual(P.sanitize_text(once), once)
+
+    def test_scoped_to_system_developer_and_assistant(self):
+        out = P.sanitize_messages([
+            {"role": "system", "content": self.PARA},
+            {"role": "developer", "content": self.PARA},
+            {"role": "assistant", "content": self.PARA},
+            {"role": "user", "content": self.PARA},
+            {"role": "tool", "content": self.PARA},
+        ])
+        self.assertEqual(out[0]["content"], self.CLEAN)
+        self.assertEqual(out[1]["content"], self.CLEAN)
+        self.assertEqual(out[2]["content"], self.CLEAN)
+        # user / tool 是用户数据，不改写。
+        self.assertEqual(out[3]["content"], self.PARA)
+        self.assertEqual(out[4]["content"], self.PARA)
+
+    def test_unrelated_at_text_untouched(self):
+        for text in (
+            "Mail me at someone@example.com and open C:\\cache\\@tmp.",
+            "npm i @deepseek-ai/dsh-llm",
+            "Relative paths resolve from the workspace root, but this sentence "
+            "is not the @ paragraph.",
+        ):
+            self.assertEqual(P.sanitize_text(text), text, text)
+            self.assertFalse(P.has_fingerprint(text))
+
+    def test_wire_body_carries_the_rewrite(self):
+        body = P.build_upstream_body({
+            "model": "deepseek-v4.1-flash",
+            "messages": [{"role": "system", "content": self.PARA},
+                         {"role": "user", "content": "hi"}]})
+        system = body["messages"][0]["content"]
+        self.assertIn("Paths beginning with @", system)
+        self.assertNotIn("Tokens prefixed with @", system)
+        self.assertIn("Relative paths are resolved", system)
+
+
 class IdentityVerbVariantsTests(unittest.TestCase):
     """同类自述句的其它动词搭配（built by / created by / …）与省略名词的形态。
 

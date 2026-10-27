@@ -11821,6 +11821,32 @@ SANITIZE_DSH_GUI_RE = re.compile(
     r" whose URL the runtime context names\.")
 SANITIZE_DSH_GUI_REPLACEMENT = r"\1 whose URL is named in the runtime context."
 SANITIZE_DSH_GUI_LOWER = "whose url the runtime context names"
+# @ 路径说明段（#677 / #678）：DSH 0.3.x 的系统提示里有一段说明「@ 开头的路径
+# 怎么解析」的整段原文。上游按连续原文匹配，单发首句 200、前两句连排就 400，
+# 所以它和自我介绍句、GUI 段一样是渠道指纹，只是规则集里一直没有这一条。
+#
+# 这里做同义改写而不是删除：@ 开头的路径、相对路径基准、结尾斜杠表示目录、
+# 其余按文件读、@"..." 用于含空格的路径——这些语义全部保留，只换措辞，让
+# 上游的连续特征失配。DSH 侧读提示词得到的行为不变。
+#
+# 正则锚定整段（DOTALL），两种线上见过的结尾措辞都覆盖：
+#   ... quotes a path containing spaces.        （0.3.x 当前写法）
+#   ... form only quotes a path that contains spaces. （更早的写法）
+# 段外的 @ 不受影响：邮箱、包名、`C:\path\@cache` 这类文本都不匹配。
+SANITIZE_DSH_PATHS_RE = re.compile(
+    r"Tokens prefixed with @ are paths the user explicitly referenced\..*?"
+    r"path (?:containing|that contains) spaces\.",
+    re.DOTALL | re.IGNORECASE,
+)
+SANITIZE_DSH_PATHS_REPLACEMENT = (
+    "Paths beginning with @ refer to files the user explicitly mentioned. "
+    "Relative paths are resolved against the workspace root; absolute paths point "
+    "to files or directories on the host. A trailing slash marks a directory, so "
+    "list it when its contents matter. Anything else is a file: open it with the "
+    "read tool when its contents are needed, and never claim to have inspected it "
+    "before reading. The @\"...\" form only quotes a path that contains spaces."
+)
+SANITIZE_DSH_PATHS_LOWER = "relative paths resolve from the workspace root"
 # 品牌词缩减（#574）：`DeepSeek Harness` 单独出现放行，但它和 GUI 描述句
 # （`this page` / `this GUI` / `this app`）连续出现时命中同一套 11-128 校验。
 # 逐段二分实测：只把品牌缩成 `DeepSeek` 就能通过，句子其余部分不用动；
@@ -11878,6 +11904,10 @@ def has_fingerprint(text, identity=True):
     if (SANITIZE_DSH_GUI_LOWER in low
             and SANITIZE_DSH_GUI_RE.search(text) is not None):
         return True
+    # @ 路径说明段：同样先做字面量探测，再交给整段正则确认。
+    if (SANITIZE_DSH_PATHS_LOWER in low
+            and SANITIZE_DSH_PATHS_RE.search(text) is not None):
+        return True
     # 动词短语只是廉价前置筛：真命中与否交给正则判定。这样 "powered by" 出现在
     # 与自我介绍无关的句子（工具/插件的产品描述）时不会走进 sanitize_text 的其余
     # 清洗步骤，也不会白白改写。
@@ -11898,6 +11928,8 @@ def sanitize_text(text, identity=True):
         text = SANITIZE_IDENTITY_RE.sub(SANITIZE_IDENTITY_REPLACEMENT, text)
         # GUI 描述段单独一条规则：锚定整句，只调整句尾语序。
         text = SANITIZE_DSH_GUI_RE.sub(SANITIZE_DSH_GUI_REPLACEMENT, text)
+        # @ 路径说明段：整段同义改写，保留 @ 路径语义。
+        text = SANITIZE_DSH_PATHS_RE.sub(SANITIZE_DSH_PATHS_REPLACEMENT, text)
         # 品牌词缩减放在最后：GUI 规则还认全名，先让它匹配原文。
         text = SANITIZE_BRAND_RE.sub(SANITIZE_BRAND_REPLACEMENT, text)
     for old, new in SANITIZE_REWRITES:
